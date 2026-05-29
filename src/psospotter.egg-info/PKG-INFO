@@ -1,0 +1,149 @@
+Metadata-Version: 2.4
+Name: psospotter
+Version: 0.1.0
+Summary: Single-cell biomarker panel selection and psoriasis classification (Python port of the psoSpotter pipeline).
+Author: psoSpotter Authors
+License: MIT License
+        
+        Copyright (c) 2026 psoSpotter Authors
+        
+        Permission is hereby granted, free of charge, to any person obtaining a copy
+        of this software and associated documentation files (the "Software"), to deal
+        in the Software without restriction, including without limitation the rights
+        to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+        copies of the Software, and to permit persons to whom the Software is
+        furnished to do so, subject to the following conditions:
+        
+        The above copyright notice and this permission notice shall be included in all
+        copies or substantial portions of the Software.
+        
+        THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+        IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+        FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+        AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+        LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+        OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+        SOFTWARE.
+        
+Keywords: single-cell,rna-seq,biomarker,logistic-regression,feature-selection
+Classifier: Programming Language :: Python :: 3
+Classifier: Intended Audience :: Science/Research
+Classifier: Topic :: Scientific/Engineering :: Bio-Informatics
+Requires-Python: >=3.9
+Description-Content-Type: text/markdown
+License-File: LICENSE
+Requires-Dist: numpy>=1.21
+Requires-Dist: scipy>=1.7
+Requires-Dist: scikit-learn>=1.0
+Requires-Dist: pandas>=1.3
+Provides-Extra: dev
+Requires-Dist: pytest>=7.0; extra == "dev"
+Requires-Dist: ruff>=0.4; extra == "dev"
+Requires-Dist: mypy>=1.0; extra == "dev"
+Dynamic: license-file
+
+# psospotter
+
+A Python port of the **psoSpotter** single-cell RNA-seq biomarker-panel pipeline
+(originally four flat scripts: `human.py`, `mouse.py`, `human_train_mouse_test.py`,
+`mouse_train_human_test.py`). Given raw single-cell counts and per-cell metadata,
+it selects a compact gene panel and fits a regularized logistic classifier
+(e.g. healthy vs. psoriasis), in both single-species and cross-species
+(1:1 ortholog) modes.
+
+## Pipeline
+
+1. Parse age / sex / condition metadata into covariates.
+2. Filter genes, library-size normalize and `log1p`-transform counts.
+3. Score each gene by a supervised standardized mean difference.
+4. Greedily prune correlated genes.
+5. Z-score features (train moments) and clip.
+6. Calibrate sparsity and run stability selection (elastic-net logistic).
+7. Build the top-K gene panel; fit a final regularized logistic model with
+   age/sex covariates.
+8. Evaluate (cell-level metrics, optional sample-level CV / label-shuffle
+   control), and — in cross-species mode — externally validate on the other
+   species via the ortholog map.
+
+## Install
+
+```bash
+pip install -e ".[dev]"
+```
+
+## Minimal working example
+
+```python
+from psospotter import simulate_data, psospotter_config, fit_panel_model
+
+# A tiny synthetic dataset (replace with your own counts + metadata)
+data = simulate_data(n_cells=300, n_genes=80, seed=1)
+
+cfg = psospotter_config("human")
+result = fit_panel_model(data["X"], data["obs"], cfg, data["var_names"])
+
+print("panel:", result["panel"][:5])
+print("test AUC:", round(result["metrics"]["test_auc"], 3))
+print(result["coefficients"].head())
+```
+
+`X` is a `scipy.sparse` matrix of **raw counts** (cells × genes); `obs` is a
+`pandas.DataFrame` of per-cell metadata containing the age, sex and condition
+columns named in the config; `var_names` is the list of gene names (optional —
+defaults to `Gene0..Gene{n-1}`).
+
+### Cross-species (train on one species, validate on the other)
+
+```python
+import numpy as np, pandas as pd
+from psospotter import simulate_data, psospotter_config, fit_cross_species_panel
+
+human = simulate_data(species="human", seed=10)
+mouse = simulate_data(species="mouse", seed=11)
+mouse_genes = np.array(["m" + g for g in human["var_names"]], dtype=object)
+ortholog = pd.DataFrame({"human_gene": human["var_names"].astype(str),
+                         "mouse_gene": mouse_genes.astype(str),
+                         "orthology_type": "ortholog_one2one"})
+
+res = fit_cross_species_panel(
+    human["X"], human["obs"], mouse["X"], mouse["obs"], ortholog,
+    psospotter_config("human", mode="cross"),
+    psospotter_config("mouse", mode="cross"),
+    human["var_names"], mouse_genes)
+print("external AUC:", round(res["external"]["auc"], 3))
+```
+
+## Public API
+
+Only these names are exported from `psospotter`; everything else is private
+(prefixed `_`):
+
+- `fit_panel_model` — single-species pipeline entry point.
+- `fit_cross_species_panel` — cross-species entry point.
+- `psospotter_config` / `PsoSpotterConfig` — configuration.
+- `simulate_data` — synthetic data for examples/tests.
+
+## Data input
+
+This package operates on **in-memory** matrices. The original scripts' on-disk
+layer (h5ad stripping, the two-pass zarr build, memmap, chunked CSR reads) is
+intentionally not ported — load your `.h5ad`/zarr into a `scipy.sparse` matrix
+first (e.g. via `anndata`/`scanpy`: `adata.X` is already cells × genes) and pass
+`adata.obs` and `adata.var_names`.
+
+## Reproducibility note
+
+The original single-species scripts seed every NumPy RNG step but **do not** set
+`random_state` on their `saga` `LogisticRegression` fits, so their model steps
+are not bit-reproducible. This package threads `random_state` (default `42`,
+configurable via `PsoSpotterConfig`) through all model fits. The integration
+tests pin the same seed in an independent reference implementation of the
+original algorithm and assert the package reproduces it exactly on 3+ datasets.
+
+## Development
+
+```bash
+pytest            # unit + integration tests
+ruff check .      # lint
+mypy src/psospotter  # type-check
+```
