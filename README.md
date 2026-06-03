@@ -1,8 +1,8 @@
 <div align="center">
 
-<img src="logo/psoSpotter.png" alt="mitoSpotter Logo" width="180" />
+<img src="logo/psoSpotter.png" alt="psoSpotter Logo" width="180" />
 
-# _mitoSpotter_
+# _psoSpotter_
 
 Single-cell RNA-seq biomarker-panel algorithm for sensitive psoriasis detection that selects a minimally viable gene panel in a cross-species manner.
 
